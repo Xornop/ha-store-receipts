@@ -43,7 +43,7 @@ class StoreReceiptsConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Log in to the chosen store."""
-        return await self._async_login("credentials", self._provider_key, False, user_input)
+        return await self._async_login("credentials", self._provider_key, "create", user_input)
 
     async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:
         """Start reauthentication."""
@@ -54,11 +54,19 @@ class StoreReceiptsConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         """Log in again."""
         key = self._get_reauth_entry().data[CONF_PROVIDER]
-        return await self._async_login("reauth_confirm", key, True, user_input)
+        return await self._async_login("reauth_confirm", key, "reauth", user_input)
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Change the token of an existing entry (Settings > ... > Reconfigure)."""
+        key = self._get_reconfigure_entry().data[CONF_PROVIDER]
+        return await self._async_login("reconfigure", key, "reconfigure", user_input)
 
     async def _async_login(
-        self, step_id: str, key: str | None, reauth: bool, user_input: dict[str, Any] | None
+        self, step_id: str, key: str | None, mode: str, user_input: dict[str, Any] | None
     ) -> ConfigFlowResult:
+        """Shared login form. mode: "create" (new entry), "reauth" or "reconfigure"."""
         provider = PROVIDERS[key]
         errors: dict[str, str] = {}
 
@@ -85,9 +93,13 @@ class StoreReceiptsConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
 
             if tokens and not errors:
-                if reauth:
+                if mode == "reauth":
                     return self.async_update_reload_and_abort(
                         self._get_reauth_entry(), data_updates=tokens
+                    )
+                if mode == "reconfigure":
+                    return self.async_update_reload_and_abort(
+                        self._get_reconfigure_entry(), data_updates=tokens
                     )
                 return self.async_create_entry(
                     title=provider.name, data={**tokens, CONF_PROVIDER: key}
