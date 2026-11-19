@@ -1,0 +1,5 @@
+refresh:
+  target:
+    entity:
+      integration: store_receipts
+      domain: sensor

@@ -1,0 +1,52 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Store Receipts",
+        "description": "Kies een winkel.",
+        "data": {
+          "provider": "Winkel"
+        }
+      },
+      "credentials": {
+        "title": "Inloggen",
+        "description": "Log in bij {store} met de Store Login add-on en plak het refresh token hieronder. Een token werkt maar één keer: de winkel vervangt het na gebruik.",
+        "data": {
+          "refresh_token": "Refresh token",
+          "code": "Logincode of redirect-URL (alleen Albert Heijn, optioneel)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Opnieuw inloggen",
+        "description": "Je sessie bij {store} is verlopen. Gebruik de Store Login add-on en plak het nieuwe refresh token.",
+        "data": {
+          "refresh_token": "Refresh token",
+          "code": "Logincode of redirect-URL (alleen Albert Heijn, optioneel)"
+        }
+      }
+    },
+    "error": {
+      "no_input": "Vul een refresh token in.",
+      "invalid_auth": "Ongeldig of verlopen token.",
+      "cannot_connect": "Kan geen verbinding maken.",
+      "unknown": "Onverwachte fout."
+    },
+    "abort": {
+      "already_configured": "Deze winkel is al toegevoegd.",
+      "reauth_successful": "Opnieuw inloggen gelukt."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "latest_receipt": {
+        "name": "Laatste bon"
+      }
+    }
+  },
+  "services": {
+    "refresh": {
+      "name": "Bon verversen",
+      "description": "Haal de laatste bon nu op in plaats van te wachten op de update van elk uur."
+    }
+  }
+}

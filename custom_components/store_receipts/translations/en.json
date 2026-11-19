@@ -1,0 +1,52 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Store Receipts",
+        "description": "Choose a store.",
+        "data": {
+          "provider": "Store"
+        }
+      },
+      "credentials": {
+        "title": "Log in",
+        "description": "Log in to {store} with the Store Login add-on and paste the refresh token below. A token can only be used once: the store replaces it after use.",
+        "data": {
+          "refresh_token": "Refresh token",
+          "code": "Login code or redirect URL (Albert Heijn only, optional)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Log in again",
+        "description": "Your {store} session expired. Use the Store Login add-on and paste the new refresh token.",
+        "data": {
+          "refresh_token": "Refresh token",
+          "code": "Login code or redirect URL (Albert Heijn only, optional)"
+        }
+      }
+    },
+    "error": {
+      "no_input": "Fill in a refresh token.",
+      "invalid_auth": "Invalid or expired token.",
+      "cannot_connect": "Could not connect.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This store is already added.",
+      "reauth_successful": "Re-authentication successful."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "latest_receipt": {
+        "name": "Latest receipt"
+      }
+    }
+  },
+  "services": {
+    "refresh": {
+      "name": "Refresh receipt",
+      "description": "Fetch the latest receipt right now instead of waiting for the hourly update."
+    }
+  }
+}
