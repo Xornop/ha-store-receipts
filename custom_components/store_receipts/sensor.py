@@ -30,11 +30,6 @@ async def async_setup_entry(
     platform.async_register_entity_service("refresh", {}, "async_refresh_receipt")
 
 
-def _fmt_money(value: float, dutch: bool) -> str:
-    text = f"€{value:.2f}"
-    return text.replace(".", ",") if dutch else text
-
-
 class LatestReceiptSensor(CoordinatorEntity[ReceiptCoordinator], SensorEntity):
     """State = date/time of the latest receipt, attributes = the items."""
 
@@ -42,7 +37,7 @@ class LatestReceiptSensor(CoordinatorEntity[ReceiptCoordinator], SensorEntity):
     _attr_translation_key = "latest_receipt"
     _attr_device_class = SensorDeviceClass.TIMESTAMP
     _attr_icon = "mdi:receipt-text"
-    _unrecorded_attributes = frozenset({"items", "items_markdown"})
+    _unrecorded_attributes = frozenset({"items"})
 
     def __init__(self, coordinator: ReceiptCoordinator, entry_id: str, store_name: str) -> None:
         super().__init__(coordinator)
@@ -69,23 +64,11 @@ class LatestReceiptSensor(CoordinatorEntity[ReceiptCoordinator], SensorEntity):
         if not data:
             return None
         items = data["items"]
-        dutch = self.hass.config.language.lower().startswith("nl")
-        head = ("Product", "Aantal", "Prijs", "Totaal") if dutch else ("Product", "Qty", "Price", "Total")
-        rows = [
-            f"| {head[0]} | {head[1]} | {head[2]} |",
-            "|---|---:|---:|",
-            *(
-                f"| {str(i['name']).replace('|', '/')} | {i['quantity']:g} | {_fmt_money(i['total'], dutch)} |"
-                for i in items
-            ),
-            f"| **{head[3]}** | | **{_fmt_money(data['total'], dutch)}** |",
-        ]
         attributes: dict[str, Any] = {
             "receipt_id": data["id"],
             "total": data["total"],
             "item_count": len(items),
             "items": items,
-            "items_markdown": "\n".join(rows),
         }
         if data.get("store"):
             attributes["store"] = data["store"]
