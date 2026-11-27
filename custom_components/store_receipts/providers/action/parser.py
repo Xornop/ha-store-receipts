@@ -49,6 +49,11 @@ def parse_session(blob: str) -> dict[str, Any]:
     }
 
 
+def important_cookies(cookies: dict[str, str]) -> dict[str, str]:
+    """The cookies that make up the login (what must be saved when they change)."""
+    return {name: cookies[name] for name in IMPORTANT_COOKIES if name in cookies}
+
+
 def dump_session(creds: dict[str, Any]) -> str:
     """Turn the session back into the blob we store."""
     data: dict[str, Any] = {
