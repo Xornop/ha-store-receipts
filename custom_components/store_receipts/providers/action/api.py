@@ -9,9 +9,9 @@ version it saw. Queries are "automatic persisted queries": see queries.py.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import time
 from typing import Any
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
@@ -25,6 +25,7 @@ from .parser import (
     apply_set_cookies,
     cookie_header,
     dump_session,
+    important_cookies,
     parse_receipt,
     parse_receipt_datetime,
     parse_session,
@@ -34,6 +35,7 @@ _LOGGER = logging.getLogger(__name__)
 
 ORIGIN = "https://www.action.com"
 GRAPHQL_URL = f"{ORIGIN}/api/graphql"
+REFRESH_URL = f"{ORIGIN}/api/auth/refresh"
 REFERER = f"{ORIGIN}/nl-nl/mijn-action/mijn-kassabonnetjes/"
 CLIENT_VERSION = "1.345"  # <meta name="release-id"> of www.action.com
 FEATURE_FLAGS = (
@@ -55,6 +57,15 @@ def _check_graphql_errors(payload: dict[str, Any]) -> None:
         return
     text = json.dumps(errors, ensure_ascii=False)[:300]
     low = text.lower()
+    codes = {
+        str(((err or {}).get("extensions") or {}).get("code", "")).upper()
+        for err in errors
+        if isinstance(err, dict)
+    }
+    if codes & {"USER_LOGGED_OUT", "UNAUTHENTICATED", "UNAUTHORIZED", "FORBIDDEN"} or (
+        "invalid access or refresh token" in low
+    ):
+        raise ReceiptAuthError(f"Action session ended (logged out): {text}")
     if "persistedquerynotfound" in low or "persisted_query_not_found" in low:
         raise ReceiptApiError(f"Action does not accept the query (also not as full text): {text}")
     if any(word in low for word in ("unauthenticated", "unauthorized", "not authenticated", "forbidden")):
@@ -150,6 +161,51 @@ async def _send(
     return payload, changed
 
 
+def _logged_out(payload: dict[str, Any]) -> bool:
+    """True if GraphQL says the access token is no longer valid (the website then refreshes)."""
+    return "user_logged_out" in json.dumps(payload.get("errors") or []).lower()
+
+
+async def _refresh_session(session: ClientSession, creds: dict[str, Any]) -> None:
+    """Renew the login like the website: POST /api/auth/refresh with the login cookies.
+
+    Seen in a HAR capture: empty body, header x-token-behaviour: default, cookies
+    refreshToken + tokensId (+ accessToken); the answer sets new cookies. On failure the
+    server only answers 401 and clears the cookies; those are NOT applied here, so the old
+    values stay in creds.
+    """
+    headers = {
+        "User-Agent": creds["user_agent"],
+        "Accept": "*/*",
+        "Accept-Language": "nl-NL,nl;q=0.9",
+        "Origin": ORIGIN,
+        "Referer": REFERER,
+        "x-token-behaviour": "default",
+        "x-feature-flags": FEATURE_FLAGS,
+        "Cookie": cookie_header(creds["cookies"]),
+    }
+    try:
+        async with session.post(
+            REFRESH_URL, headers=headers, timeout=TIMEOUT, allow_redirects=False
+        ) as resp:
+            status = resp.status
+            text = await resp.text()
+            set_cookies = resp.headers.getall("Set-Cookie", [])
+    except TimeoutError as err:
+        raise ReceiptApiError("Token refresh timed out (www.action.com)") from err
+    except ClientError as err:
+        raise ReceiptApiError(f"Token refresh failed: {type(err).__name__}: {err}") from err
+
+    if status in (401, 403) or 300 <= status < 400:
+        if status == 403 and ("Just a moment" in text or "/cdn-cgi/challenge-platform" in text):
+            raise ReceiptAuthError(CLOUDFLARE_MSG)
+        raise ReceiptAuthError(f"Action session ended, refresh refused (HTTP {status}): {text[:150]}")
+    if status >= 400:
+        raise ReceiptApiError(f"Token refresh HTTP {status}: {text[:150]}")
+    apply_set_cookies(creds["cookies"], set_cookies)
+    _LOGGER.debug("Action session refreshed")
+
+
 async def _graphql(
     session: ClientSession,
     creds: dict[str, Any],
@@ -157,13 +213,23 @@ async def _graphql(
     variables: dict[str, Any],
 ) -> tuple[dict[str, Any], bool]:
     """Run a query. Returns (json, important cookies changed); updates creds in place."""
-    payload, changed = await _send(session, creds, operation, variables, full_query=False)
-    if _persisted_query_missing(payload):
-        # The server does not know the hash (yet): send the full query once, like the website
-        payload, changed_again = await _send(session, creds, operation, variables, full_query=True)
-        changed = changed or changed_again
-    _check_graphql_errors(payload)
-    return payload, changed
+    refreshed = False
+    while True:
+        payload, changed = await _send(session, creds, operation, variables, full_query=False)
+        if _persisted_query_missing(payload):
+            # The server does not know the hash (yet): send the full query once, like the website
+            payload, changed_again = await _send(
+                session, creds, operation, variables, full_query=True
+            )
+            changed = changed or changed_again
+        if _logged_out(payload) and not refreshed:
+            # Access token expired: renew it once with the refresh token, then retry
+            refreshed = True
+            await _refresh_session(session, creds)
+            changed = True
+            continue
+        _check_graphql_errors(payload)
+        return payload, changed
 
 
 def _receipt_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -196,6 +262,11 @@ class ActionApi(BaseApi):
 
     _creds: dict[str, Any] | None = None
 
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # One fetch at a time: parallel use of a rotating login could invalidate it
+        self._fetch_lock = asyncio.Lock()
+
     async def _ensure_token(self, force: bool = False) -> None:
         """Cookie session: nothing to refresh, just load the session once."""
         async with self._lock:
@@ -211,15 +282,28 @@ class ActionApi(BaseApi):
     async def _query(self, operation: str, variables: dict[str, Any]) -> dict[str, Any]:
         await self._ensure_token()
         assert self._creds is not None
-        payload, changed = await _graphql(self._session, self._creds, operation, variables)
-        if changed:
-            # Action rotated a cookie: save it at once
-            self._tokens = _tokens(self._creds)
-            if self._token_callback:
-                self._token_callback(self._tokens)
+        before = important_cookies(self._creds["cookies"])
+        try:
+            payload, _ = await _graphql(self._session, self._creds, operation, variables)
+        finally:
+            # Save rotated login cookies at once, also when the request then fails:
+            # the old ones may already be invalid and a retry would start from them
+            after = important_cookies(self._creds["cookies"])
+            if after != before:
+                _LOGGER.debug(
+                    "Action rotated cookies: %s",
+                    ", ".join(sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))),
+                )
+                self._tokens = _tokens(self._creds)
+                if self._token_callback:
+                    self._token_callback(self._tokens)
         return payload
 
     async def async_get_latest_receipt(self) -> dict[str, Any] | None:
+        async with self._fetch_lock:
+            return await self._fetch_latest_receipt()
+
+    async def _fetch_latest_receipt(self) -> dict[str, Any] | None:
         payload = await self._query("ReceiptList", {"limit": LIST_LIMIT})
         receipts = _receipt_list(payload)
         if not receipts:
